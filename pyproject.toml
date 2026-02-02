@@ -1,0 +1,18 @@
+[project]
+name = "bilibili-helper"
+version = "0.1.0"
+description = "Bilibili helper dashboard for keyword-based push rules"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "Bilibili Helper" },
+]
+dependencies = [
+  "flask==3.0.2",
+]
+
+[project.urls]
+Homepage = "https://bilibili.com"
+
+[tool.uv]
+package = false

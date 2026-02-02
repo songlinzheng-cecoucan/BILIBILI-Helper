@@ -8,13 +8,11 @@
 - 推送频率与渠道配置
 - 推送预览与关键词聚合建议展示
 
-## 本地启动
+## 本地启动（uv）
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python app.py
+uv sync
+uv run python app.py
 ```
 
 打开浏览器访问 `http://localhost:5000`。
