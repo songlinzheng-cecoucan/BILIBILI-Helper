@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import json
+import os
+import secrets
 import sqlite3
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional
 
-from flask import Flask, redirect, render_template, request, url_for
+from flask import Flask, redirect, render_template, request, session, url_for
 
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = APP_DIR / "data.db"
@@ -56,6 +61,9 @@ class Settings:
 
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("BILIBILI_HELPER_SECRET") or secrets.token_hex(32)
+
+BILI_SESSION_STORE: dict[str, dict[str, str]] = {}
 
 
 def get_connection() -> sqlite3.Connection:
@@ -194,8 +202,96 @@ def build_feed_preview(
     return preview[:10]
 
 
+def create_bili_session(display_name: str, mid: str, sessdata: str) -> str:
+    session_id = secrets.token_urlsafe(32)
+    BILI_SESSION_STORE[session_id] = {
+        "display_name": display_name,
+        "mid": mid,
+        "sessdata": sessdata,
+    }
+    return session_id
+
+
+def get_bili_session() -> Optional[dict[str, str]]:
+    session_id = session.get("bili_session_id")
+    if not session_id:
+        return None
+    return BILI_SESSION_STORE.get(session_id)
+
+
+def clear_bili_session() -> None:
+    session_id = session.pop("bili_session_id", None)
+    if session_id:
+        BILI_SESSION_STORE.pop(session_id, None)
+
+
+def fetch_followings(
+    mid: str,
+    sessdata: str,
+    keyword: str,
+    max_pages: int = 3,
+) -> list[dict[str, str]]:
+    results: list[dict[str, str]] = []
+    encoded_keyword = keyword.strip().lower()
+    if not encoded_keyword:
+        return results
+
+    for page in range(1, max_pages + 1):
+        query = urllib.parse.urlencode(
+            {
+                "vmid": mid,
+                "pn": page,
+                "ps": 50,
+                "order": "desc",
+                "order_type": "attention",
+            }
+        )
+        url = f"https://api.bilibili.com/x/relation/followings?{query}"
+        request_obj = urllib.request.Request(
+            url,
+            headers={
+                "Cookie": f"SESSDATA={sessdata}",
+                "User-Agent": "BILIBILI-Helper/1.0",
+            },
+        )
+        with urllib.request.urlopen(request_obj, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        data = payload.get("data") or {}
+        followings = data.get("list") or []
+        if not followings:
+            break
+        for item in followings:
+            name = str(item.get("uname", "")).strip()
+            item_mid = str(item.get("mid", "")).strip()
+            if encoded_keyword not in name.lower():
+                continue
+            results.append(
+                {
+                    "name": name or "未知UP主",
+                    "mid": item_mid or "未知",
+                    "special": "1" if item.get("special") == 1 else "0",
+                }
+            )
+    return results
+
+
 @app.route("/")
 def index():
+    account = get_bili_session()
+    search_keyword = request.args.get("search", "").strip()
+    search_results: list[dict[str, str]] = []
+    search_error = ""
+
+    if account and search_keyword:
+        try:
+            search_results = fetch_followings(
+                account["mid"],
+                account["sessdata"],
+                search_keyword,
+            )
+        except Exception:
+            search_error = "搜索失败，请检查 SESSDATA 是否有效或稍后重试。"
+
     with get_connection() as conn:
         keywords = fetch_keywords(conn)
         creators = fetch_up_creators(conn)
@@ -214,6 +310,10 @@ def index():
         categories=sorted({"默认"} | {kw.category for kw in keywords}),
         category_suggestions=CATEGORY_SUGGESTIONS,
         preview=preview,
+        account=account,
+        search_keyword=search_keyword,
+        search_results=search_results,
+        search_error=search_error,
     )
 
 
@@ -280,6 +380,26 @@ def update_settings():
     return redirect(url_for("index"))
 
 
+@app.route("/account/login", methods=["POST"])
+def account_login():
+    display_name = request.form.get("display_name", "").strip()
+    mid = request.form.get("mid", "").strip()
+    sessdata = request.form.get("sessdata", "").strip()
+
+    if not (display_name and mid and sessdata):
+        return redirect(url_for("index"))
+
+    clear_bili_session()
+    session["bili_session_id"] = create_bili_session(display_name, mid, sessdata)
+    return redirect(url_for("index"))
+
+
+@app.route("/account/logout", methods=["POST"])
+def account_logout():
+    clear_bili_session()
+    return redirect(url_for("index"))
+
+
 @app.route("/creators/add", methods=["POST"])
 def add_creator():
     name = request.form.get("name", "").strip()
@@ -292,6 +412,29 @@ def add_creator():
                 (name, mid, tag),
             )
     return redirect(url_for("index"))
+
+
+@app.route("/account/creators/add", methods=["POST"])
+def add_creator_from_account():
+    name = request.form.get("name", "").strip()
+    mid = request.form.get("mid", "").strip()
+    tag = request.form.get("tag", "special")
+    search_keyword = request.form.get("search_keyword", "").strip()
+    if name:
+        with get_connection() as conn:
+            existing = conn.execute(
+                """
+                SELECT 1 FROM up_creators
+                WHERE name = ? AND mid = ? AND tag = ?
+                """,
+                (name, mid, tag),
+            ).fetchone()
+            if not existing:
+                conn.execute(
+                    "INSERT INTO up_creators (name, mid, tag, enabled) VALUES (?, ?, ?, 1)",
+                    (name, mid, tag),
+                )
+    return redirect(url_for("index", search=search_keyword))
 
 
 @app.route("/creators/<int:creator_id>/toggle", methods=["POST"])
