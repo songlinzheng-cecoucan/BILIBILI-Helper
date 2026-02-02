@@ -1,0 +1,290 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row g-4">
+  <div class="col-lg-8">
+    <div class="card shadow-sm mb-4">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-start mb-3">
+          <div>
+            <h5 class="card-title mb-1">主题关键词</h5>
+            <p class="text-muted mb-0">按主题定义推送规则，可随时增删改。</p>
+          </div>
+          <span class="badge bg-primary">{{ keywords | length }} 个关键词</span>
+        </div>
+        <form class="row g-2 align-items-end" method="post" action="{{ url_for('add_keyword') }}">
+          <div class="col-md-5">
+            <label class="form-label">关键词</label>
+            <input class="form-control" name="term" placeholder="例如：AI、数码、手游" required />
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">分类</label>
+            <input class="form-control" name="category" list="categoryOptions" placeholder="默认" />
+            <datalist id="categoryOptions">
+              {% for category in categories %}
+              <option value="{{ category }}"></option>
+              {% endfor %}
+            </datalist>
+          </div>
+          <div class="col-md-3">
+            <button class="btn btn-primary w-100">新增关键词</button>
+          </div>
+        </form>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>分类</th>
+              <th>关键词</th>
+              <th>状态</th>
+              <th class="text-end">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for keyword in keywords %}
+            <tr>
+              <td>{{ keyword.category }}</td>
+              <td>{{ keyword.term }}</td>
+              <td>
+                <span class="badge {{ 'bg-success' if keyword.enabled else 'bg-secondary' }}">
+                  {{ '启用' if keyword.enabled else '停用' }}
+                </span>
+              </td>
+              <td class="text-end">
+                <form class="d-inline" method="post" action="{{ url_for('toggle_keyword', keyword_id=keyword.id) }}">
+                  <button class="btn btn-sm btn-outline-secondary">{{ '停用' if keyword.enabled else '启用' }}</button>
+                </form>
+                <form class="d-inline" method="post" action="{{ url_for('delete_keyword', keyword_id=keyword.id) }}">
+                  <button class="btn btn-sm btn-outline-danger">删除</button>
+                </form>
+              </td>
+            </tr>
+            {% else %}
+            <tr>
+              <td colspan="4" class="text-center text-muted py-4">暂无关键词，请添加你的主题。</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card shadow-sm mb-4">
+      <div class="card-body">
+        <h5 class="card-title">特别关注 & 付费 UP 主</h5>
+        <p class="text-muted">系统会在推送中高亮特别关注与付费关注的更新。</p>
+        <form class="row g-2 align-items-end" method="post" action="{{ url_for('add_creator') }}">
+          <div class="col-md-4">
+            <label class="form-label">UP 主昵称</label>
+            <input class="form-control" name="name" placeholder="UP 主昵称" required />
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">MID</label>
+            <input class="form-control" name="mid" placeholder="可选" />
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">类型</label>
+            <select class="form-select" name="tag">
+              <option value="special">特别关注</option>
+              <option value="paid">付费关注</option>
+            </select>
+          </div>
+          <div class="col-md-2">
+            <button class="btn btn-primary w-100">添加</button>
+          </div>
+        </form>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>UP 主</th>
+              <th>类型</th>
+              <th>状态</th>
+              <th class="text-end">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for creator in creators %}
+            <tr>
+              <td>
+                <div class="fw-semibold">{{ creator.name }}</div>
+                <div class="small text-muted">MID: {{ creator.mid or '未填写' }}</div>
+              </td>
+              <td>
+                <span class="badge {{ 'bg-warning text-dark' if creator.tag == 'paid' else 'bg-info text-dark' }}">
+                  {{ '付费' if creator.tag == 'paid' else '特别关注' }}
+                </span>
+              </td>
+              <td>
+                <span class="badge {{ 'bg-success' if creator.enabled else 'bg-secondary' }}">
+                  {{ '启用' if creator.enabled else '停用' }}
+                </span>
+              </td>
+              <td class="text-end">
+                <form class="d-inline" method="post" action="{{ url_for('toggle_creator', creator_id=creator.id) }}">
+                  <button class="btn btn-sm btn-outline-secondary">{{ '停用' if creator.enabled else '启用' }}</button>
+                </form>
+                <form class="d-inline" method="post" action="{{ url_for('delete_creator', creator_id=creator.id) }}">
+                  <button class="btn btn-sm btn-outline-danger">删除</button>
+                </form>
+              </td>
+            </tr>
+            {% else %}
+            <tr>
+              <td colspan="4" class="text-center text-muted py-4">暂无特别关注或付费 UP 主。</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h5 class="card-title">黑名单 / 白名单</h5>
+        <p class="text-muted">用于控制最终推送范围。</p>
+        <form class="row g-2 align-items-end" method="post" action="{{ url_for('add_list_entry') }}">
+          <div class="col-md-4">
+            <label class="form-label">UP 主昵称</label>
+            <input class="form-control" name="name" required />
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">MID</label>
+            <input class="form-control" name="mid" placeholder="可选" />
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">列表类型</label>
+            <select class="form-select" name="list_type">
+              <option value="whitelist">白名单</option>
+              <option value="blacklist">黑名单</option>
+            </select>
+          </div>
+          <div class="col-md-2">
+            <button class="btn btn-primary w-100">添加</button>
+          </div>
+        </form>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>UP 主</th>
+              <th>名单</th>
+              <th>状态</th>
+              <th class="text-end">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for entry in list_entries %}
+            <tr>
+              <td>
+                <div class="fw-semibold">{{ entry.name }}</div>
+                <div class="small text-muted">MID: {{ entry.mid or '未填写' }}</div>
+              </td>
+              <td>
+                <span class="badge {{ 'bg-danger' if entry.list_type == 'blacklist' else 'bg-success' }}">
+                  {{ '黑名单' if entry.list_type == 'blacklist' else '白名单' }}
+                </span>
+              </td>
+              <td>
+                <span class="badge {{ 'bg-success' if entry.enabled else 'bg-secondary' }}">
+                  {{ '启用' if entry.enabled else '停用' }}
+                </span>
+              </td>
+              <td class="text-end">
+                <form class="d-inline" method="post" action="{{ url_for('toggle_list_entry', entry_id=entry.id) }}">
+                  <button class="btn btn-sm btn-outline-secondary">{{ '停用' if entry.enabled else '启用' }}</button>
+                </form>
+                <form class="d-inline" method="post" action="{{ url_for('delete_list_entry', entry_id=entry.id) }}">
+                  <button class="btn btn-sm btn-outline-danger">删除</button>
+                </form>
+              </td>
+            </tr>
+            {% else %}
+            <tr>
+              <td colspan="4" class="text-center text-muted py-4">暂无黑白名单条目。</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-4">
+    <div class="card shadow-sm mb-4">
+      <div class="card-body">
+        <h5 class="card-title">推送设置</h5>
+        <form method="post" action="{{ url_for('update_settings') }}">
+          <div class="mb-3">
+            <label class="form-label">推送频率（小时）</label>
+            <input class="form-control" name="send_interval_hours" type="number" min="1" value="{{ settings.send_interval_hours }}" />
+          </div>
+          <div class="mb-3">
+            <label class="form-label">邮件接收人</label>
+            <input class="form-control" name="email_recipients" placeholder="多个邮箱用逗号分隔" value="{{ settings.email_recipients }}" />
+          </div>
+          <div class="mb-3">
+            <label class="form-label">企业微信/微信机器人 Webhook</label>
+            <input class="form-control" name="wechat_webhook" placeholder="https://..." value="{{ settings.wechat_webhook }}" />
+          </div>
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" name="aggregates_enabled" id="aggregates_enabled" {% if settings.aggregates_enabled %}checked{% endif %}>
+            <label class="form-check-label" for="aggregates_enabled">开启关键词聚合推荐</label>
+          </div>
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" name="highlight_special" id="highlight_special" {% if settings.highlight_special %}checked{% endif %}>
+            <label class="form-check-label" for="highlight_special">高亮特别关注</label>
+          </div>
+          <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" name="highlight_paid" id="highlight_paid" {% if settings.highlight_paid %}checked{% endif %}>
+            <label class="form-check-label" for="highlight_paid">高亮付费关注</label>
+          </div>
+          <button class="btn btn-primary w-100">保存设置</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="card shadow-sm mb-4">
+      <div class="card-body">
+        <h5 class="card-title">关键词聚合建议</h5>
+        <p class="text-muted">基于你的关注主题提供快速选择。</p>
+        {% for group, suggestions in category_suggestions.items() %}
+        <div class="mb-3">
+          <div class="fw-semibold">{{ group }}</div>
+          <div class="d-flex flex-wrap gap-2 mt-2">
+            {% for suggestion in suggestions %}
+            <span class="badge bg-light text-dark border">{{ suggestion }}</span>
+            {% endfor %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h5 class="card-title">推送预览</h5>
+        <p class="text-muted">根据当前规则生成的示例推送。</p>
+        <ul class="list-group list-group-flush">
+          {% for item in preview %}
+          <li class="list-group-item">
+            <div class="d-flex justify-content-between">
+              <span class="fw-semibold">{{ item.title }}</span>
+              {% if item.tag %}
+              <span class="badge bg-warning text-dark">{{ item.tag }}</span>
+              {% endif %}
+            </div>
+            <div class="small text-muted">{{ item.author }} · {{ item.time }}</div>
+          </li>
+          {% else %}
+          <li class="list-group-item text-muted">添加关键词后即可生成推送预览。</li>
+          {% endfor %}
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
