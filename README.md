@@ -1,2 +1,27 @@
 # BILIBILI-Helper
-Self-assistant with bilibili account
+
+一个用于管理 B 站关注主题并定时推送（邮件 + 微信）的控制台原型。当前版本重点提供：
+
+- 关键词主题的增删改查
+- 特别关注 / 付费 UP 主高亮配置
+- 黑名单 / 白名单管理
+- 推送频率与渠道配置
+- 推送预览与关键词聚合建议展示
+
+## 本地启动
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python app.py
+```
+
+打开浏览器访问 `http://localhost:5000`。
+
+## 下一步建议
+
+- 接入 B 站订阅 API（或自动化登录）获取真实更新
+- 增加邮件 / 微信推送服务模块
+- 定时任务（如 APScheduler 或系统 Cron）按 2 小时周期触发推送
+- 引入权限认证与多用户支持
