@@ -4,6 +4,7 @@ import json
 import os
 import secrets
 import sqlite3
+import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -231,6 +232,10 @@ def clear_bili_session() -> None:
         BILI_SESSION_STORE.pop(session_id, None)
 
 
+class RateLimitError(RuntimeError):
+    pass
+
+
 def fetch_bili_json(url: str, sessdata: Optional[str] = None) -> dict:
     headers = {
         "User-Agent": "BILIBILI-Helper/1.0",
@@ -239,12 +244,28 @@ def fetch_bili_json(url: str, sessdata: Optional[str] = None) -> dict:
     if sessdata:
         headers["Cookie"] = f"SESSDATA={sessdata}"
     request_obj = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request_obj, timeout=10) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    if payload.get("code") != 0:
+    delay = 1.0
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(request_obj, timeout=10) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429 and attempt < 2:
+                time.sleep(delay)
+                delay *= 2
+                continue
+            raise
+        if payload.get("code") == 0:
+            return payload.get("data") or {}
+        if payload.get("code") == -799 and attempt < 2:
+            time.sleep(delay)
+            delay *= 2
+            continue
         message = payload.get("message") or "请求失败"
+        if payload.get("code") == -799:
+            raise RateLimitError(message)
         raise RuntimeError(message)
-    return payload.get("data") or {}
+    raise RateLimitError("请求过于频繁，请稍后再试。")
 
 
 def fetch_user_profile(sessdata: str) -> dict[str, str]:
@@ -356,10 +377,11 @@ def fetch_following_updates(
     sessdata: str,
     interval_hours: int,
     limit: Optional[int] = None,
-) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+) -> tuple[list[dict[str, str]], list[dict[str, str]], bool]:
     followings = fetch_followings_list(mid, sessdata, max_pages=2)
     updates: list[dict[str, str]] = []
     statuses: list[dict[str, str]] = []
+    rate_limited = False
     cutoff_ts = int(datetime.now().timestamp()) - max(interval_hours, 1) * 3600
     for item in followings:
         try:
@@ -369,6 +391,17 @@ def fetch_following_updates(
                 sessdata,
                 max_pages=2,
             )
+        except RateLimitError:
+            rate_limited = True
+            statuses.append(
+                {
+                    "creator": item["name"],
+                    "creator_mid": item["mid"],
+                    "status": "rate_limited",
+                    "count": 0,
+                }
+            )
+            continue
         except Exception:
             statuses.append(
                 {
@@ -408,8 +441,8 @@ def fetch_following_updates(
             )
     updates.sort(key=lambda x: int(x.get("created_ts", "0")), reverse=True)
     if limit is None:
-        return updates, statuses
-    return updates[: max(limit, 0)], statuses
+        return updates, statuses, rate_limited
+    return updates[: max(limit, 0)], statuses, rate_limited
 
 
 @app.route("/")
@@ -423,6 +456,7 @@ def index():
     updates: list[dict[str, str]] = []
     update_statuses: list[dict[str, str]] = []
     updates_error = ""
+    rate_limited = False
     login_error = session.pop("login_error", "")
 
     with get_connection() as conn:
@@ -448,11 +482,14 @@ def index():
         except Exception:
             followings_error = "关注列表拉取失败，请稍后重试。"
         try:
-            updates, update_statuses = fetch_following_updates(
+            updates, update_statuses, rate_limited = fetch_following_updates(
                 account["mid"],
                 account["sessdata"],
                 interval_hours=settings.send_interval_hours,
             )
+        except RateLimitError:
+            rate_limited = True
+            updates_error = "触发限频，请稍后再试。"
         except Exception:
             updates_error = "关注更新拉取失败，请稍后重试。"
 
@@ -482,6 +519,7 @@ def index():
         updates=updates,
         update_statuses=update_statuses,
         updates_error=updates_error,
+        rate_limited=rate_limited,
         login_error=login_error,
     )
 
