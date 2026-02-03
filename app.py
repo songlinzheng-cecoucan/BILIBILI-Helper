@@ -307,7 +307,10 @@ def fetch_followings(
     return results
 
 
-def fetch_latest_video(mid: str) -> Optional[dict[str, str]]:
+def fetch_latest_video(
+    mid: str,
+    sessdata: Optional[str] = None,
+) -> Optional[dict[str, str]]:
     query = urllib.parse.urlencode(
         {
             "mid": mid,
@@ -317,7 +320,7 @@ def fetch_latest_video(mid: str) -> Optional[dict[str, str]]:
         }
     )
     url = f"https://api.bilibili.com/x/space/arc/search?{query}"
-    data = fetch_bili_json(url)
+    data = fetch_bili_json(url, sessdata)
     vlist = (data.get("list") or {}).get("vlist") or []
     if not vlist:
         return None
@@ -343,7 +346,10 @@ def fetch_following_updates(
     followings = fetch_followings_list(mid, sessdata, max_pages=2)
     updates: list[dict[str, str]] = []
     for item in followings[: max(limit, 1)]:
-        latest = fetch_latest_video(item["mid"])
+        try:
+            latest = fetch_latest_video(item["mid"], sessdata)
+        except Exception:
+            continue
         if not latest:
             continue
         updates.append(
