@@ -356,9 +356,10 @@ def fetch_following_updates(
     sessdata: str,
     interval_hours: int,
     limit: Optional[int] = None,
-) -> list[dict[str, str]]:
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     followings = fetch_followings_list(mid, sessdata, max_pages=2)
     updates: list[dict[str, str]] = []
+    statuses: list[dict[str, str]] = []
     cutoff_ts = int(datetime.now().timestamp()) - max(interval_hours, 1) * 3600
     for item in followings:
         try:
@@ -369,7 +370,33 @@ def fetch_following_updates(
                 max_pages=2,
             )
         except Exception:
+            statuses.append(
+                {
+                    "creator": item["name"],
+                    "creator_mid": item["mid"],
+                    "status": "api_failed",
+                    "count": 0,
+                }
+            )
             continue
+        if not creator_updates:
+            statuses.append(
+                {
+                    "creator": item["name"],
+                    "creator_mid": item["mid"],
+                    "status": "no_updates",
+                    "count": 0,
+                }
+            )
+        else:
+            statuses.append(
+                {
+                    "creator": item["name"],
+                    "creator_mid": item["mid"],
+                    "status": "updated",
+                    "count": len(creator_updates),
+                }
+            )
         for update in creator_updates:
             updates.append(
                 {
@@ -381,8 +408,8 @@ def fetch_following_updates(
             )
     updates.sort(key=lambda x: int(x.get("created_ts", "0")), reverse=True)
     if limit is None:
-        return updates
-    return updates[: max(limit, 0)]
+        return updates, statuses
+    return updates[: max(limit, 0)], statuses
 
 
 @app.route("/")
@@ -394,6 +421,7 @@ def index():
     followings: list[dict[str, str]] = []
     followings_error = ""
     updates: list[dict[str, str]] = []
+    update_statuses: list[dict[str, str]] = []
     updates_error = ""
     login_error = session.pop("login_error", "")
 
@@ -420,7 +448,7 @@ def index():
         except Exception:
             followings_error = "关注列表拉取失败，请稍后重试。"
         try:
-            updates = fetch_following_updates(
+            updates, update_statuses = fetch_following_updates(
                 account["mid"],
                 account["sessdata"],
                 interval_hours=settings.send_interval_hours,
@@ -452,6 +480,7 @@ def index():
         followings=followings,
         followings_error=followings_error,
         updates=updates,
+        update_statuses=update_statuses,
         updates_error=updates_error,
         login_error=login_error,
     )
