@@ -5,6 +5,40 @@
   <div class="col-lg-8">
     <div class="card shadow-sm mb-4">
       <div class="card-body">
+        <div class="d-flex justify-content-between align-items-start mb-2">
+          <div>
+            <h5 class="card-title mb-1">关注更新</h5>
+            <p class="text-muted mb-0">展示最近 {{ settings.send_interval_hours }} 小时内的最新投稿。</p>
+          </div>
+          <span class="badge bg-light text-dark border">{{ updates | length }} 条</span>
+        </div>
+        {% if updates_error %}
+        <div class="alert alert-warning">{{ updates_error }}</div>
+        {% endif %}
+        {% if updates %}
+        <ul class="list-group list-group-flush">
+          {% for item in updates %}
+          <li class="list-group-item">
+            <div class="d-flex justify-content-between align-items-start gap-2">
+              <div>
+                <div class="fw-semibold">{{ item.title }}</div>
+                <div class="small text-muted">{{ item.creator }} · {{ item.created }}</div>
+              </div>
+              {% if item.link %}
+              <a class="btn btn-sm btn-outline-primary" href="{{ item.link }}" target="_blank" rel="noopener">查看</a>
+              {% endif %}
+            </div>
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <div class="text-muted">暂无更新或尚未登录。</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card shadow-sm mb-4">
+      <div class="card-body">
         <div class="d-flex justify-content-between align-items-start mb-3">
           <div>
             <h5 class="card-title mb-1">主题关键词</h5>
@@ -322,35 +356,6 @@
             <button class="btn btn-primary w-100">登录</button>
           </div>
         </form>
-        {% endif %}
-      </div>
-    </div>
-
-    <div class="card shadow-sm mb-4">
-      <div class="card-body">
-        <h5 class="card-title">关注更新</h5>
-        <p class="text-muted">从 B 站 REST API 拉取最新投稿。</p>
-        {% if updates_error %}
-        <div class="alert alert-warning">{{ updates_error }}</div>
-        {% endif %}
-        {% if updates %}
-        <ul class="list-group list-group-flush">
-          {% for item in updates %}
-          <li class="list-group-item">
-            <div class="d-flex justify-content-between align-items-start gap-2">
-              <div>
-                <div class="fw-semibold">{{ item.title }}</div>
-                <div class="small text-muted">{{ item.creator }} · {{ item.created }}</div>
-              </div>
-              {% if item.link %}
-              <a class="btn btn-sm btn-outline-primary" href="{{ item.link }}" target="_blank" rel="noopener">查看</a>
-              {% endif %}
-            </div>
-          </li>
-          {% endfor %}
-        </ul>
-        {% else %}
-        <div class="text-muted">暂无更新或尚未登录。</div>
         {% endif %}
       </div>
     </div>

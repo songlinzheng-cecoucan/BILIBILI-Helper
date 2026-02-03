@@ -341,16 +341,20 @@ def fetch_latest_video(
 def fetch_following_updates(
     mid: str,
     sessdata: str,
-    limit: int = 20,
+    interval_hours: int,
+    limit: Optional[int] = None,
 ) -> list[dict[str, str]]:
     followings = fetch_followings_list(mid, sessdata, max_pages=2)
     updates: list[dict[str, str]] = []
-    for item in followings[: max(limit, 1)]:
+    cutoff_ts = int(datetime.now().timestamp()) - max(interval_hours, 1) * 3600
+    for item in followings:
         try:
             latest = fetch_latest_video(item["mid"], sessdata)
         except Exception:
             continue
         if not latest:
+            continue
+        if int(latest.get("created_ts") or 0) < cutoff_ts:
             continue
         updates.append(
             {
@@ -361,7 +365,9 @@ def fetch_following_updates(
             }
         )
     updates.sort(key=lambda x: int(x.get("created_ts", "0")), reverse=True)
-    return updates[:limit]
+    if limit is None:
+        return updates
+    return updates[: max(limit, 0)]
 
 
 @app.route("/")
@@ -375,6 +381,9 @@ def index():
     updates: list[dict[str, str]] = []
     updates_error = ""
     login_error = session.pop("login_error", "")
+
+    with get_connection() as conn:
+        settings = fetch_settings(conn)
 
     if account and search_keyword:
         try:
@@ -399,7 +408,7 @@ def index():
             updates = fetch_following_updates(
                 account["mid"],
                 account["sessdata"],
-                limit=12,
+                interval_hours=settings.send_interval_hours,
             )
         except Exception:
             updates_error = "关注更新拉取失败，请稍后重试。"
@@ -408,7 +417,6 @@ def index():
         keywords = fetch_keywords(conn)
         creators = fetch_up_creators(conn)
         list_entries = fetch_list_entries(conn)
-        settings = fetch_settings(conn)
 
     preview = build_feed_preview(keywords, creators, settings)
 
