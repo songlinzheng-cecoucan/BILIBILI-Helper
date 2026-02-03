@@ -307,35 +307,48 @@ def fetch_followings(
     return results
 
 
-def fetch_latest_video(
+def fetch_creator_updates(
     mid: str,
+    cutoff_ts: int,
     sessdata: Optional[str] = None,
-) -> Optional[dict[str, str]]:
-    query = urllib.parse.urlencode(
-        {
-            "mid": mid,
-            "pn": 1,
-            "ps": 1,
-            "order": "pubdate",
-        }
-    )
-    url = f"https://api.bilibili.com/x/space/arc/search?{query}"
-    data = fetch_bili_json(url, sessdata)
-    vlist = (data.get("list") or {}).get("vlist") or []
-    if not vlist:
-        return None
-    item = vlist[0]
-    created_ts = int(item.get("created") or 0)
-    return {
-        "title": str(item.get("title", "")).strip() or "未命名视频",
-        "created": datetime.fromtimestamp(created_ts).strftime("%Y-%m-%d %H:%M"),
-        "created_ts": str(created_ts),
-        "bvid": str(item.get("bvid", "")).strip(),
-        "author": str(item.get("author", "")).strip(),
-        "link": f"https://www.bilibili.com/video/{item.get('bvid')}"
-        if item.get("bvid")
-        else "",
-    }
+    max_pages: int = 3,
+) -> list[dict[str, str]]:
+    updates: list[dict[str, str]] = []
+    for page in range(1, max_pages + 1):
+        query = urllib.parse.urlencode(
+            {
+                "mid": mid,
+                "pn": page,
+                "ps": 30,
+                "order": "pubdate",
+            }
+        )
+        url = f"https://api.bilibili.com/x/space/arc/search?{query}"
+        data = fetch_bili_json(url, sessdata)
+        vlist = (data.get("list") or {}).get("vlist") or []
+        if not vlist:
+            break
+        for item in vlist:
+            created_ts = int(item.get("created") or 0)
+            if created_ts < cutoff_ts:
+                break
+            updates.append(
+                {
+                    "title": str(item.get("title", "")).strip() or "未命名视频",
+                    "created": datetime.fromtimestamp(created_ts).strftime(
+                        "%Y-%m-%d %H:%M"
+                    ),
+                    "created_ts": str(created_ts),
+                    "bvid": str(item.get("bvid", "")).strip(),
+                    "author": str(item.get("author", "")).strip(),
+                    "link": f"https://www.bilibili.com/video/{item.get('bvid')}"
+                    if item.get("bvid")
+                    else "",
+                }
+            )
+        if int(vlist[-1].get("created") or 0) < cutoff_ts:
+            break
+    return updates
 
 
 def fetch_following_updates(
@@ -349,21 +362,23 @@ def fetch_following_updates(
     cutoff_ts = int(datetime.now().timestamp()) - max(interval_hours, 1) * 3600
     for item in followings:
         try:
-            latest = fetch_latest_video(item["mid"], sessdata)
+            creator_updates = fetch_creator_updates(
+                item["mid"],
+                cutoff_ts,
+                sessdata,
+                max_pages=2,
+            )
         except Exception:
             continue
-        if not latest:
-            continue
-        if int(latest.get("created_ts") or 0) < cutoff_ts:
-            continue
-        updates.append(
-            {
-                **latest,
-                "creator": item["name"],
-                "creator_mid": item["mid"],
-                "special": item["special"],
-            }
-        )
+        for update in creator_updates:
+            updates.append(
+                {
+                    **update,
+                    "creator": item["name"],
+                    "creator_mid": item["mid"],
+                    "special": item["special"],
+                }
+            )
     updates.sort(key=lambda x: int(x.get("created_ts", "0")), reverse=True)
     if limit is None:
         return updates
