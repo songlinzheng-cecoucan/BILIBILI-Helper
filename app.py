@@ -4,6 +4,7 @@ import json
 import os
 import secrets
 import sqlite3
+import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -231,6 +232,10 @@ def clear_bili_session() -> None:
         BILI_SESSION_STORE.pop(session_id, None)
 
 
+class RateLimitError(RuntimeError):
+    pass
+
+
 def fetch_bili_json(url: str, sessdata: Optional[str] = None) -> dict:
     headers = {
         "User-Agent": "BILIBILI-Helper/1.0",
@@ -239,12 +244,28 @@ def fetch_bili_json(url: str, sessdata: Optional[str] = None) -> dict:
     if sessdata:
         headers["Cookie"] = f"SESSDATA={sessdata}"
     request_obj = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request_obj, timeout=10) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    if payload.get("code") != 0:
+    delay = 1.0
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(request_obj, timeout=10) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429 and attempt < 2:
+                time.sleep(delay)
+                delay *= 2
+                continue
+            raise
+        if payload.get("code") == 0:
+            return payload.get("data") or {}
+        if payload.get("code") == -799 and attempt < 2:
+            time.sleep(delay)
+            delay *= 2
+            continue
         message = payload.get("message") or "请求失败"
+        if payload.get("code") == -799:
+            raise RateLimitError(message)
         raise RuntimeError(message)
-    return payload.get("data") or {}
+    raise RateLimitError("请求过于频繁，请稍后再试。")
 
 
 def fetch_user_profile(sessdata: str) -> dict[str, str]:
@@ -307,61 +328,121 @@ def fetch_followings(
     return results
 
 
-def fetch_latest_video(
+def fetch_creator_updates(
     mid: str,
+    cutoff_ts: int,
     sessdata: Optional[str] = None,
-) -> Optional[dict[str, str]]:
-    query = urllib.parse.urlencode(
-        {
-            "mid": mid,
-            "pn": 1,
-            "ps": 1,
-            "order": "pubdate",
-        }
-    )
-    url = f"https://api.bilibili.com/x/space/arc/search?{query}"
-    data = fetch_bili_json(url, sessdata)
-    vlist = (data.get("list") or {}).get("vlist") or []
-    if not vlist:
-        return None
-    item = vlist[0]
-    created_ts = int(item.get("created") or 0)
-    return {
-        "title": str(item.get("title", "")).strip() or "未命名视频",
-        "created": datetime.fromtimestamp(created_ts).strftime("%Y-%m-%d %H:%M"),
-        "created_ts": str(created_ts),
-        "bvid": str(item.get("bvid", "")).strip(),
-        "author": str(item.get("author", "")).strip(),
-        "link": f"https://www.bilibili.com/video/{item.get('bvid')}"
-        if item.get("bvid")
-        else "",
-    }
+    max_pages: int = 3,
+) -> list[dict[str, str]]:
+    updates: list[dict[str, str]] = []
+    for page in range(1, max_pages + 1):
+        query = urllib.parse.urlencode(
+            {
+                "mid": mid,
+                "pn": page,
+                "ps": 30,
+                "order": "pubdate",
+            }
+        )
+        url = f"https://api.bilibili.com/x/space/arc/search?{query}"
+        data = fetch_bili_json(url, sessdata)
+        vlist = (data.get("list") or {}).get("vlist") or []
+        if not vlist:
+            break
+        for item in vlist:
+            created_ts = int(item.get("created") or 0)
+            if created_ts < cutoff_ts:
+                break
+            updates.append(
+                {
+                    "title": str(item.get("title", "")).strip() or "未命名视频",
+                    "created": datetime.fromtimestamp(created_ts).strftime(
+                        "%Y-%m-%d %H:%M"
+                    ),
+                    "created_ts": str(created_ts),
+                    "bvid": str(item.get("bvid", "")).strip(),
+                    "author": str(item.get("author", "")).strip(),
+                    "link": f"https://www.bilibili.com/video/{item.get('bvid')}"
+                    if item.get("bvid")
+                    else "",
+                }
+            )
+        if int(vlist[-1].get("created") or 0) < cutoff_ts:
+            break
+    return updates
 
 
 def fetch_following_updates(
     mid: str,
     sessdata: str,
-    limit: int = 20,
-) -> list[dict[str, str]]:
+    interval_hours: int,
+    limit: Optional[int] = None,
+) -> tuple[list[dict[str, str]], list[dict[str, str]], bool]:
     followings = fetch_followings_list(mid, sessdata, max_pages=2)
     updates: list[dict[str, str]] = []
-    for item in followings[: max(limit, 1)]:
+    statuses: list[dict[str, str]] = []
+    rate_limited = False
+    cutoff_ts = int(datetime.now().timestamp()) - max(interval_hours, 1) * 3600
+    for item in followings:
         try:
-            latest = fetch_latest_video(item["mid"], sessdata)
+            creator_updates = fetch_creator_updates(
+                item["mid"],
+                cutoff_ts,
+                sessdata,
+                max_pages=2,
+            )
+        except RateLimitError:
+            rate_limited = True
+            statuses.append(
+                {
+                    "creator": item["name"],
+                    "creator_mid": item["mid"],
+                    "status": "rate_limited",
+                    "count": 0,
+                }
+            )
+            continue
         except Exception:
+            statuses.append(
+                {
+                    "creator": item["name"],
+                    "creator_mid": item["mid"],
+                    "status": "api_failed",
+                    "count": 0,
+                }
+            )
             continue
-        if not latest:
-            continue
-        updates.append(
-            {
-                **latest,
-                "creator": item["name"],
-                "creator_mid": item["mid"],
-                "special": item["special"],
-            }
-        )
+        if not creator_updates:
+            statuses.append(
+                {
+                    "creator": item["name"],
+                    "creator_mid": item["mid"],
+                    "status": "no_updates",
+                    "count": 0,
+                }
+            )
+        else:
+            statuses.append(
+                {
+                    "creator": item["name"],
+                    "creator_mid": item["mid"],
+                    "status": "updated",
+                    "count": len(creator_updates),
+                }
+            )
+        for update in creator_updates:
+            updates.append(
+                {
+                    **update,
+                    "creator": item["name"],
+                    "creator_mid": item["mid"],
+                    "special": item["special"],
+                }
+            )
     updates.sort(key=lambda x: int(x.get("created_ts", "0")), reverse=True)
-    return updates[:limit]
+    if limit is None:
+        return updates, statuses, rate_limited
+    return updates[: max(limit, 0)], statuses, rate_limited
 
 
 @app.route("/")
@@ -373,8 +454,13 @@ def index():
     followings: list[dict[str, str]] = []
     followings_error = ""
     updates: list[dict[str, str]] = []
+    update_statuses: list[dict[str, str]] = []
     updates_error = ""
+    rate_limited = False
     login_error = session.pop("login_error", "")
+
+    with get_connection() as conn:
+        settings = fetch_settings(conn)
 
     if account and search_keyword:
         try:
@@ -396,11 +482,14 @@ def index():
         except Exception:
             followings_error = "关注列表拉取失败，请稍后重试。"
         try:
-            updates = fetch_following_updates(
+            updates, update_statuses, rate_limited = fetch_following_updates(
                 account["mid"],
                 account["sessdata"],
-                limit=12,
+                interval_hours=settings.send_interval_hours,
             )
+        except RateLimitError:
+            rate_limited = True
+            updates_error = "触发限频，请稍后再试。"
         except Exception:
             updates_error = "关注更新拉取失败，请稍后重试。"
 
@@ -408,7 +497,6 @@ def index():
         keywords = fetch_keywords(conn)
         creators = fetch_up_creators(conn)
         list_entries = fetch_list_entries(conn)
-        settings = fetch_settings(conn)
 
     preview = build_feed_preview(keywords, creators, settings)
 
@@ -429,7 +517,9 @@ def index():
         followings=followings,
         followings_error=followings_error,
         updates=updates,
+        update_statuses=update_statuses,
         updates_error=updates_error,
+        rate_limited=rate_limited,
         login_error=login_error,
     )
 
