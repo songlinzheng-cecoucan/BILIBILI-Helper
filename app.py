@@ -202,12 +202,18 @@ def build_feed_preview(
     return preview[:10]
 
 
-def create_bili_session(display_name: str, mid: str, sessdata: str) -> str:
+def create_bili_session(
+    display_name: str,
+    mid: str,
+    sessdata: str,
+    face: str = "",
+) -> str:
     session_id = secrets.token_urlsafe(32)
     BILI_SESSION_STORE[session_id] = {
         "display_name": display_name,
         "mid": mid,
         "sessdata": sessdata,
+        "face": face,
     }
     return session_id
 
@@ -225,17 +231,37 @@ def clear_bili_session() -> None:
         BILI_SESSION_STORE.pop(session_id, None)
 
 
-def fetch_followings(
+def fetch_bili_json(url: str, sessdata: Optional[str] = None) -> dict:
+    headers = {
+        "User-Agent": "BILIBILI-Helper/1.0",
+        "Referer": "https://www.bilibili.com/",
+    }
+    if sessdata:
+        headers["Cookie"] = f"SESSDATA={sessdata}"
+    request_obj = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request_obj, timeout=10) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if payload.get("code") != 0:
+        message = payload.get("message") or "请求失败"
+        raise RuntimeError(message)
+    return payload.get("data") or {}
+
+
+def fetch_user_profile(sessdata: str) -> dict[str, str]:
+    data = fetch_bili_json("https://api.bilibili.com/x/web-interface/nav", sessdata)
+    return {
+        "display_name": str(data.get("uname", "")).strip() or "哔哩哔哩用户",
+        "mid": str(data.get("mid", "")).strip(),
+        "face": str(data.get("face", "")).strip(),
+    }
+
+
+def fetch_followings_list(
     mid: str,
     sessdata: str,
-    keyword: str,
     max_pages: int = 3,
 ) -> list[dict[str, str]]:
     results: list[dict[str, str]] = []
-    encoded_keyword = keyword.strip().lower()
-    if not encoded_keyword:
-        return results
-
     for page in range(1, max_pages + 1):
         query = urllib.parse.urlencode(
             {
@@ -247,24 +273,13 @@ def fetch_followings(
             }
         )
         url = f"https://api.bilibili.com/x/relation/followings?{query}"
-        request_obj = urllib.request.Request(
-            url,
-            headers={
-                "Cookie": f"SESSDATA={sessdata}",
-                "User-Agent": "BILIBILI-Helper/1.0",
-            },
-        )
-        with urllib.request.urlopen(request_obj, timeout=10) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-        data = payload.get("data") or {}
+        data = fetch_bili_json(url, sessdata)
         followings = data.get("list") or []
         if not followings:
             break
         for item in followings:
             name = str(item.get("uname", "")).strip()
             item_mid = str(item.get("mid", "")).strip()
-            if encoded_keyword not in name.lower():
-                continue
             results.append(
                 {
                     "name": name or "未知UP主",
@@ -275,12 +290,85 @@ def fetch_followings(
     return results
 
 
+def fetch_followings(
+    mid: str,
+    sessdata: str,
+    keyword: str,
+    max_pages: int = 3,
+) -> list[dict[str, str]]:
+    encoded_keyword = keyword.strip().lower()
+    if not encoded_keyword:
+        return []
+    results: list[dict[str, str]] = []
+    for item in fetch_followings_list(mid, sessdata, max_pages=max_pages):
+        if encoded_keyword not in item["name"].lower():
+            continue
+        results.append(item)
+    return results
+
+
+def fetch_latest_video(mid: str) -> Optional[dict[str, str]]:
+    query = urllib.parse.urlencode(
+        {
+            "mid": mid,
+            "pn": 1,
+            "ps": 1,
+            "order": "pubdate",
+        }
+    )
+    url = f"https://api.bilibili.com/x/space/arc/search?{query}"
+    data = fetch_bili_json(url)
+    vlist = (data.get("list") or {}).get("vlist") or []
+    if not vlist:
+        return None
+    item = vlist[0]
+    created_ts = int(item.get("created") or 0)
+    return {
+        "title": str(item.get("title", "")).strip() or "未命名视频",
+        "created": datetime.fromtimestamp(created_ts).strftime("%Y-%m-%d %H:%M"),
+        "created_ts": str(created_ts),
+        "bvid": str(item.get("bvid", "")).strip(),
+        "author": str(item.get("author", "")).strip(),
+        "link": f"https://www.bilibili.com/video/{item.get('bvid')}"
+        if item.get("bvid")
+        else "",
+    }
+
+
+def fetch_following_updates(
+    mid: str,
+    sessdata: str,
+    limit: int = 20,
+) -> list[dict[str, str]]:
+    followings = fetch_followings_list(mid, sessdata, max_pages=2)
+    updates: list[dict[str, str]] = []
+    for item in followings[: max(limit, 1)]:
+        latest = fetch_latest_video(item["mid"])
+        if not latest:
+            continue
+        updates.append(
+            {
+                **latest,
+                "creator": item["name"],
+                "creator_mid": item["mid"],
+                "special": item["special"],
+            }
+        )
+    updates.sort(key=lambda x: int(x.get("created_ts", "0")), reverse=True)
+    return updates[:limit]
+
+
 @app.route("/")
 def index():
     account = get_bili_session()
     search_keyword = request.args.get("search", "").strip()
     search_results: list[dict[str, str]] = []
     search_error = ""
+    followings: list[dict[str, str]] = []
+    followings_error = ""
+    updates: list[dict[str, str]] = []
+    updates_error = ""
+    login_error = session.pop("login_error", "")
 
     if account and search_keyword:
         try:
@@ -291,6 +379,24 @@ def index():
             )
         except Exception:
             search_error = "搜索失败，请检查 SESSDATA 是否有效或稍后重试。"
+
+    if account:
+        try:
+            followings = fetch_followings_list(
+                account["mid"],
+                account["sessdata"],
+                max_pages=1,
+            )
+        except Exception:
+            followings_error = "关注列表拉取失败，请稍后重试。"
+        try:
+            updates = fetch_following_updates(
+                account["mid"],
+                account["sessdata"],
+                limit=12,
+            )
+        except Exception:
+            updates_error = "关注更新拉取失败，请稍后重试。"
 
     with get_connection() as conn:
         keywords = fetch_keywords(conn)
@@ -314,6 +420,11 @@ def index():
         search_keyword=search_keyword,
         search_results=search_results,
         search_error=search_error,
+        followings=followings,
+        followings_error=followings_error,
+        updates=updates,
+        updates_error=updates_error,
+        login_error=login_error,
     )
 
 
@@ -382,15 +493,25 @@ def update_settings():
 
 @app.route("/account/login", methods=["POST"])
 def account_login():
-    display_name = request.form.get("display_name", "").strip()
-    mid = request.form.get("mid", "").strip()
     sessdata = request.form.get("sessdata", "").strip()
 
-    if not (display_name and mid and sessdata):
+    if not sessdata:
+        session["login_error"] = "请提供有效的 SESSDATA。"
+        return redirect(url_for("index"))
+
+    try:
+        profile = fetch_user_profile(sessdata)
+    except Exception:
+        session["login_error"] = "登录失败，SESSDATA 无效或请求受限。"
         return redirect(url_for("index"))
 
     clear_bili_session()
-    session["bili_session_id"] = create_bili_session(display_name, mid, sessdata)
+    session["bili_session_id"] = create_bili_session(
+        profile["display_name"],
+        profile["mid"],
+        sessdata,
+        profile["face"],
+    )
     return redirect(url_for("index"))
 
 
